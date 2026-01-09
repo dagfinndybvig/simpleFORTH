@@ -9,6 +9,8 @@ Can be used to get started with Brodie's https://www.forth.com/starting-forth/
 
 For context you can also take a look at Byte Magazine:
 
+https://archive.org/details/byte-magazine-1980-08
+
 ![byteforth](https://github.com/user-attachments/assets/d2ce42a4-e110-4426-9e1e-72f6236dc155)
 
 
