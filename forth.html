@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JS Forth Interpreter</title>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --term-bg: #000000;
+            --text-color: #33ff33;
+            --error-color: #ff3333;
+            --dim-color: #008800;
+            --border-color: #333;
+            --font-stack: 'Courier New', Courier, monospace;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: var(--font-stack);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        header {
+            background-color: #161b22;
+            padding: 10px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 { margin: 0; font-size: 1.2rem; text-transform: uppercase; letter-spacing: 2px; }
+
+        #main-container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            height: 100%;
+        }
+
+        /* Terminal Area */
+        #terminal {
+            flex: 1; 
+            background-color: var(--term-bg);
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            overflow: hidden;
+            border-right: none;
+        }
+
+        /* Graphics Canvas Area */
+        #gfx-wrapper {
+            display: none;
+            background: #111;
+            border-bottom: 2px solid var(--dim-color);
+            margin-bottom: 10px;
+            text-align: center;
+            padding: 10px;
+        }
+
+        canvas {
+            background: #000;
+            border: 1px solid #333;
+            max-width: 100%;
+            max-height: 40vh;
+            box-shadow: 0 0 10px rgba(51, 255, 51, 0.2);
+        }
+
+        #output {
+            flex: 1;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            margin-bottom: 10px;
+            font-size: 16px;
+            line-height: 1.4;
+        }
+
+        .log-line { margin: 2px 0; }
+        .log-input { color: #fff; font-weight: bold; }
+        .log-output { color: var(--text-color); }
+        .log-error { color: var(--error-color); }
+        .log-info { color: #88ccff; font-style: italic; }
+
+        #input-area {
+            display: flex;
+            align-items: center;
+            border-top: 1px solid var(--dim-color);
+            padding-top: 10px;
+        }
+
+        #prompt {
+            margin-right: 10px;
+            font-weight: bold;
+            user-select: none;
+        }
+
+        #command-input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: #fff;
+            font-family: var(--font-stack);
+            font-size: 16px;
+            outline: none;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            #main-container { flex-direction: column; }
+        }
+
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #111; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>JS-Forth</h1>
+    <div style="font-size: 0.8rem; color: #888;">New: Use <code>VARIABLE X</code>, then <code>10 X !</code> and <code>X @ .</code></div>
+</header>
+
+<div id="main-container">
+    <div id="terminal" onclick="document.getElementById('command-input').focus()">
+        
+        <div id="gfx-wrapper">
+            <canvas id="gfx-canvas" width="640" height="320"></canvas>
+            <div style="font-size:12px; color:#555">Resolution: 640x320</div>
+        </div>
+
+        <div id="output">
+            <div class="log-info">Welcome to JS-Forth 1.2 (Variable Support Added)</div>
+            <div class="log-info">Memory for variables starts at address 900.</div>
+            <div class="log-info">Type 'WORDS' to see available commands.</div>
+            <div class="log-info">------------------------------------</div>
+        </div>
+        <div id="input-area">
+            <span id="prompt">ok&gt;</span>
+            <input type="text" id="command-input" autocomplete="off" spellcheck="false" autofocus>
+        </div>
+    </div>
+</div>
+
+<script>
+class ForthInterpreter {
+    constructor(outputCallback, stackCallback) {
+        this.stack = [];
+        this.returnStack = [];
+        this.dictionary = {};
+        // Memory size 1000. Reserve 900-999 for variables.
+        this.memory = new Array(1000).fill(0); 
+        this.stringStore = []; 
+        this.outputCallback = outputCallback;
+        this.stackCallback = stackCallback;
+        
+        this.compiling = false;
+        this.newWordName = null;
+        this.newWordDefinition = [];
+        this.compileBuffer = []; 
+
+        this.variableAddresses = {};
+        this.variablePointer = 900; // Start variable storage at address 900
+
+        this.audioCtx = null;
+        this.canvas = document.getElementById('gfx-canvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.gfxWrapper = document.getElementById('gfx-wrapper');
+
+        this.initCoreWords();
+    }
+
+    print(msg) {
+        this.outputCallback(msg);
+    }
+
+    assertStack(n) {
+        if (this.stack.length < n) {
+            throw new Error("Stack underflow");
+        }
+    }
+
+    initAudio() {
+        if (!this.audioCtx) {
+            this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (this.audioCtx.state === 'suspended') {
+            this.audioCtx.resume();
+        }
+    }
+
+    initCoreWords() {
+        const d = this.dictionary;
+
+        // Stack Manipulation
+        d['DUP'] = () => { this.assertStack(1); this.stack.push(this.stack[this.stack.length - 1]); };
+        d['DROP'] = () => { this.assertStack(1); this.stack.pop(); };
+        d['SWAP'] = () => { this.assertStack(2); const a = this.stack.pop(); const b = this.stack.pop(); this.stack.push(a); this.stack.push(b); };
+        d['OVER'] = () => { this.assertStack(2); this.stack.push(this.stack[this.stack.length - 2]); };
+        d['ROT']  = () => { 
+            this.assertStack(3); 
+            const a = this.stack.pop(); 
+            const b = this.stack.pop(); 
+            const c = this.stack.pop(); 
+            this.stack.push(b); this.stack.push(a); this.stack.push(c); 
+        };
+        d['PICK'] = () => { 
+            this.assertStack(1); 
+            const u = this.stack.pop();
+            this.assertStack(u + 1);
+            this.stack.push(this.stack[this.stack.length - 1 - u]);
+        };
+        d['CLEAR'] = () => { this.stack = []; };
+        d['.S'] = () => { this.print(`< ${this.stack.length} > ${this.stack.join(' ')}`); };
+
+        // Arithmetic
+        d['+'] = () => { this.assertStack(2); this.stack.push(this.stack.pop() + this.stack.pop()); };
+        d['-'] = () => { this.assertStack(2); const a = this.stack.pop(); this.stack.push(this.stack.pop() - a); };
+        d['*'] = () => { this.assertStack(2); this.stack.push(this.stack.pop() * this.stack.pop()); };
+        d['/'] = () => { 
+            this.assertStack(2); 
+            const a = this.stack.pop(); 
+            if(a===0) throw new Error("Division by zero"); 
+            this.stack.push(Math.floor(this.stack.pop() / a)); 
+        };
+        d['MOD'] = () => { 
+            this.assertStack(2); 
+            const a = this.stack.pop(); 
+            if(a===0) throw new Error("Division by zero");
+            this.stack.push(this.stack.pop() % a); 
+        };
+
+        // Logical
+        d['='] = () => { this.assertStack(2); this.stack.push(this.stack.pop() === this.stack.pop() ? -1 : 0); };
+        d['<'] = () => { this.assertStack(2); const a = this.stack.pop(); this.stack.push(this.stack.pop() < a ? -1 : 0); };
+        d['>'] = () => { this.assertStack(2); const a = this.stack.pop(); this.stack.push(this.stack.pop() > a ? -1 : 0); };
+        d['AND'] = () => { this.assertStack(2); this.stack.push(this.stack.pop() & this.stack.pop()); };
+        d['OR'] = () => { this.assertStack(2); this.stack.push(this.stack.pop() | this.stack.pop()); };
+        d['INVERT'] = () => { this.assertStack(1); this.stack.push(~this.stack.pop()); };
+
+        // I/O
+        d['.'] = () => { this.assertStack(1); this.print(this.stack.pop() + " "); };
+        d['EMIT'] = () => { this.assertStack(1); this.print(String.fromCharCode(this.stack.pop())); };
+        d['CR'] = () => { this.print("\n"); };
+        d['WORDS'] = () => { 
+            const words = Object.keys(this.dictionary).sort().join(', ');
+            this.print(words);
+        };
+
+        // Memory
+        d['!'] = () => { this.assertStack(2); const addr = this.stack.pop(); const val = this.stack.pop(); this.memory[addr] = val; };
+        d['@'] = () => { this.assertStack(1); const addr = this.stack.pop(); this.stack.push(this.memory[addr] || 0); };
+        
+        // Variable (Placeholder for recognition)
+        d['VARIABLE'] = () => { throw new Error("VARIABLE must be used in immediate mode."); };
+
+
+        // String Words
+        d['TYPE'] = () => {
+            this.assertStack(2);
+            // TYPE expects ( addr count -- )
+            const count = this.stack.pop();
+            const addr = this.stack.pop();
+            
+            // Check for obvious misuse (e.g., if the count was used as address)
+            if (addr < 0 || addr >= this.stringStore.length || this.stringStore[addr] === undefined) {
+                throw new Error(`Invalid string address (${addr}). Did you intend to pass an address, or did you mix up count/address on the stack?`);
+            }
+            
+            const fullStr = this.stringStore[addr];
+            const strToPrint = fullStr.substring(0, count);
+            this.print(strToPrint);
+        };
+
+        // Graphics Primitives
+        d['G-SHOW'] = () => { 
+            this.gfxWrapper.style.display = 'block'; 
+            this.print("( Graphics Display On )");
+        };
+        d['G-HIDE'] = () => { 
+            this.gfxWrapper.style.display = 'none'; 
+            this.print("( Graphics Display Off )");
+        };
+        d['G-CLS'] = () => { 
+            this.ctx.fillStyle = "#000000";
+            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+            this.ctx.strokeStyle = "#33ff33";
+            this.ctx.fillStyle = "#33ff33";
+        };
+        d['COLOR'] = () => {
+            this.assertStack(3);
+            const b = this.stack.pop() & 255;
+            const g = this.stack.pop() & 255;
+            const r = this.stack.pop() & 255;
+            const colorStr = `rgb(${r},${g},${b})`;
+            this.ctx.strokeStyle = colorStr;
+            this.ctx.fillStyle = colorStr;
+        };
+        d['PLOT'] = () => {
+            this.assertStack(2);
+            const y = this.stack.pop();
+            const x = this.stack.pop();
+            this.ctx.fillRect(x, y, 1, 1);
+        };
+        d['LINE'] = () => {
+            this.assertStack(4);
+            const y2 = this.stack.pop();
+            const x2 = this.stack.pop();
+            const y1 = this.stack.pop();
+            const x1 = this.stack.pop();
+            this.ctx.beginPath();
+            this.ctx.moveTo(x1, y1);
+            this.ctx.lineTo(x2, y2);
+            this.ctx.stroke();
+        };
+        d['BOX'] = () => {
+            this.assertStack(4);
+            const h = this.stack.pop();
+            const w = this.stack.pop();
+            const y = this.stack.pop();
+            const x = this.stack.pop();
+            this.ctx.strokeRect(x, y, w, h);
+        };
+        d['FBOX'] = () => {
+            this.assertStack(4);
+            const h = this.stack.pop();
+            const w = this.stack.pop();
+            const y = this.stack.pop();
+            const x = this.stack.pop();
+            this.ctx.fillRect(x, y, w, h);
+        };
+        d['CIRCLE'] = () => {
+            this.assertStack(3);
+            const r = this.stack.pop();
+            const y = this.stack.pop();
+            const x = this.stack.pop();
+            this.ctx.beginPath();
+            this.ctx.arc(x, y, r, 0, 2 * Math.PI);
+            this.ctx.stroke();
+        };
+
+        // Sound Primitives
+        d['BEEP'] = () => {
+            this.assertStack(2);
+            const duration = this.stack.pop();
+            const freq = this.stack.pop();
+            
+            this.initAudio();
+            if(!this.audioCtx) return;
+
+            const osc = this.audioCtx.createOscillator();
+            const gain = this.audioCtx.createGain();
+            
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(freq, this.audioCtx.currentTime);
+            
+            gain.gain.setValueAtTime(0.1, this.audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, this.audioCtx.currentTime + (duration/1000));
+
+            osc.connect(gain);
+            gain.connect(this.audioCtx.destination);
+            
+            osc.start();
+            osc.stop(this.audioCtx.currentTime + (duration/1000));
+        };
+
+
+        // Compiler Primitives
+        d[':'] = () => {  };
+        d[';'] = () => {  };
+        d['IF'] = () => {  };
+        d['ELSE'] = () => {  };
+        d['THEN'] = () => {  };
+        d['DO'] = () => {  };
+        d['LOOP'] = () => {  };
+        d['I'] = () => { 
+            if(this.returnStack.length < 2) throw new Error("I used outside of loop");
+            this.stack.push(this.returnStack[this.returnStack.length - 1]);
+        };
+    }
+
+    parseStringLiteral(tokens, startIndex) {
+        let i = startIndex;
+        let endIdx = -1;
+        
+        while (i < tokens.length) {
+            if (tokens[i].endsWith('"')) {
+                endIdx = i;
+                break;
+            }
+            i++;
+        }
+        
+        if (endIdx === -1) throw new Error("Unclosed string literal");
+
+        // Join all tokens between the start index and the end quote, then remove the closing quote
+        let rawString = tokens.slice(startIndex, endIdx + 1).join(' ');
+        rawString = rawString.slice(0, -1); // Remove trailing quote
+        
+        // Store the string
+        this.stringStore.push(rawString);
+        const addr = this.stringStore.length - 1;
+        const count = rawString.length;
+        
+        // Return the new instruction pointer and the string data
+        return { 
+            newIndex: endIdx + 1, 
+            addr: addr, 
+            count: count 
+        };
+    }
+
+    processInput(inputString) {
+        this.initAudio();
+
+        const tokens = inputString.split(/\s+/).filter(t => t.length > 0);
+        let i = 0;
+        
+        while (i < tokens.length) {
+            const token = tokens[i].toUpperCase();
+
+            try {
+                // --- Variable Definition Handling (Immediate Mode) ---
+                if (token === 'VARIABLE') {
+                    i++;
+                    if (i >= tokens.length) throw new Error("Variable name expected after VARIABLE");
+                    const varName = tokens[i].toUpperCase();
+
+                    // 1. Check bounds and allocate address
+                    if (this.variablePointer >= this.memory.length) {
+                        throw new Error("Variable memory space exhausted.");
+                    }
+                    const addr = this.variablePointer++;
+                    this.variableAddresses[varName] = addr;
+                    this.memory[addr] = 0; // Initialize storage cell to 0
+
+                    // 2. Define the new word to push its address
+                    this.dictionary[varName] = () => {
+                        this.stack.push(this.variableAddresses[varName]);
+                    };
+                    this.print(`Variable ${varName} defined at address ${addr}.`);
+
+                    i++; // Consume the variable name
+                    continue; 
+                }
+
+                if (token === 'S"') {
+                    i++; // Consume 'S"'
+                    const result = this.parseStringLiteral(tokens, i);
+                    i = result.newIndex;
+                    
+                    if (this.compiling) {
+                        // Compile push instructions for the address and count
+                        this.newWordDefinition.push({ type: 'number', value: result.addr });
+                        this.newWordDefinition.push({ type: 'number', value: result.count });
+                    } else {
+                        // Immediate mode: push addr and count onto the stack
+                        this.stack.push(result.addr);
+                        this.stack.push(result.count);
+                    }
+                    continue; // Skip the regular increment at the end of the loop
+                }
+
+                if (this.compiling) {
+                    if (token === ';') {
+                        this.dictionary[this.newWordName] = this.compileDefinition(this.newWordDefinition);
+                        this.compiling = false;
+                        this.print(" Compiled.\n");
+                    } else if (['IF', 'ELSE', 'THEN', 'DO', 'LOOP', 'BEGIN', 'UNTIL'].includes(token)) {
+                        this.newWordDefinition.push({ type: 'word', name: token });
+                    } else {
+                        const num = Number(token);
+                        if (!isNaN(num)) {
+                             this.newWordDefinition.push({ type: 'number', value: num });
+                        } else {
+                             this.newWordDefinition.push({ type: 'word', name: token });
+                        }
+                    }
+                } else {
+                    if (token === ':') {
+                        this.compiling = true;
+                        i++;
+                        if (i >= tokens.length) throw new Error("Name expected after :");
+                        this.newWordName = tokens[i].toUpperCase();
+                        this.newWordDefinition = [];
+                    } else if (this.dictionary[token]) {
+                        const entry = this.dictionary[token];
+                        if (typeof entry === 'function') {
+                            entry();
+                        } else if (Array.isArray(entry)) {
+                            this.executeDefinition(entry);
+                        }
+                    } else {
+                        const num = Number(token);
+                        if (!isNaN(num)) {
+                            this.stack.push(num);
+                        } else {
+                            throw new Error(`Unknown word: ${token}`);
+                        }
+                    }
+                }
+            } catch (e) {
+                this.print(`\nError: ${e.message} \n`);
+                this.stack = []; 
+                this.compiling = false; 
+                break;
+            }
+            i++;
+        }
+        
+        this.stackCallback(this.stack);
+    }
+
+    compileDefinition(tokens) {
+        const compiled = [];
+        const controlStack = []; 
+
+        for (let i = 0; i < tokens.length; i++) {
+            const t = tokens[i];
+            
+            if (t.type === 'word') {
+                if (t.name === 'IF') {
+                    compiled.push({ op: 'cond_jump', target: null }); 
+                    controlStack.push({ type: 'IF', idx: compiled.length - 1 });
+                } else if (t.name === 'ELSE') {
+                    const ifBlock = controlStack.pop();
+                    if (!ifBlock || ifBlock.type !== 'IF') throw new Error("ELSE without IF");
+                    compiled.push({ op: 'jump', target: null }); 
+                    compiled[ifBlock.idx].target = compiled.length;
+                    controlStack.push({ type: 'ELSE', idx: compiled.length - 1 });
+                } else if (t.name === 'THEN') {
+                    const block = controlStack.pop();
+                    if (!block) throw new Error("THEN without IF/ELSE");
+                    compiled[block.idx].target = compiled.length;
+                } else if (t.name === 'DO') {
+                    compiled.push({ op: 'do' });
+                    controlStack.push({ type: 'DO', idx: compiled.length });
+                } else if (t.name === 'LOOP') {
+                    const doBlock = controlStack.pop();
+                    if (!doBlock || doBlock.type !== 'DO') throw new Error("LOOP without DO");
+                    compiled.push({ op: 'loop', target: doBlock.idx });
+                } else {
+                    compiled.push({ op: 'call', name: t.name });
+                }
+            } else {
+                compiled.push({ op: 'push', value: t.value });
+            }
+        }
+        
+        if (controlStack.length > 0) throw new Error("Unclosed control structure");
+        return compiled;
+    }
+
+    executeDefinition(ops) {
+        let ip = 0; 
+        let opsExecuted = 0; 
+        const MAX_OPS = 100000; 
+
+        while (ip < ops.length) {
+            if(opsExecuted++ > MAX_OPS) throw new Error("Max execution limit reached (infinite loop?)");
+
+            const op = ops[ip];
+            
+            switch(op.op) {
+                case 'push':
+                    this.stack.push(op.value);
+                    ip++;
+                    break;
+                case 'call':
+                    if (this.dictionary[op.name]) {
+                        const word = this.dictionary[op.name];
+                        if (typeof word === 'function') {
+                            word();
+                        } else {
+                            this.executeDefinition(word);
+                        }
+                    } else {
+                         throw new Error(`Unknown word: ${op.name}`);
+                    }
+                    ip++;
+                    break;
+                case 'cond_jump':
+                    this.assertStack(1);
+                    const cond = this.stack.pop();
+                    if (cond === 0) {
+                        ip = op.target;
+                    } else {
+                        ip++;
+                    }
+                    break;
+                case 'jump':
+                    ip = op.target;
+                    break;
+                case 'do':
+                    this.assertStack(2);
+                    const start = this.stack.pop();
+                    const limit = this.stack.pop();
+                    this.returnStack.push(limit);
+                    this.returnStack.push(start);
+                    ip++;
+                    break;
+                case 'loop':
+                    let idx = this.returnStack.pop();
+                    let lim = this.returnStack.pop();
+                    idx++;
+                    if (idx < lim) {
+                        this.returnStack.push(lim);
+                        this.returnStack.push(idx);
+                        ip = op.target;
+                    } else {
+                        ip++;
+                    }
+                    break;
+            }
+        }
+    }
+}
+
+const outputDiv = document.getElementById('output');
+const commandInput = document.getElementById('command-input');
+
+function appendOutput(text, type='log-output') {
+    const span = document.createElement('span');
+    span.textContent = text;
+    span.className = type;
+    outputDiv.appendChild(span);
+    outputDiv.scrollTop = outputDiv.scrollHeight;
+}
+
+function updateStackUI(stack) {
+    // Stack display removed. If user uses .S, it will still print to the console output.
+}
+
+function updateDictUI(dictionary) {
+    // Dictionary display removed. If user uses WORDS, it will still print to the console output.
+}
+
+const interp = new ForthInterpreter(
+    (msg) => appendOutput(msg),
+    (stack) => updateStackUI(stack)
+);
+
+interp.dictionary['G-CLS']();
+
+commandInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        const input = commandInput.value;
+        if (!input.trim()) return;
+
+        const cmdDiv = document.createElement('div');
+        cmdDiv.className = 'log-line';
+        cmdDiv.innerHTML = `<span class="log-input">&gt; ${input}</span>`;
+        outputDiv.appendChild(cmdDiv);
+
+        interp.processInput(input);
+        
+        if (!interp.compiling) {
+             appendOutput(" ok\n", 'log-info');
+        } else {
+             appendOutput("  compiled...\n", 'log-info');
+        }
+
+        commandInput.value = '';
+        outputDiv.scrollTop = outputDiv.scrollHeight;
+    }
+});
+
+window.onload = () => {
+    commandInput.focus();
+};
+</script>
+
+</body>
+</html>
