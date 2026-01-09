@@ -1,5 +1,5 @@
 # simpleFORTH
-Simple html/js FORTH with some audiovisual capacity.
+Elementary html/js FORTH with some audiovisual capacity.
 
 Try it at https://dagfinndybvig.github.io/simpleFORTH/
 
